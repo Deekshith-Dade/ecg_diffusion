@@ -1,0 +1,2 @@
+Following @lucidrains
+[Classifier Free Guidance](https://github.com/lucidrains/denoising-diffusion-pytorch/blob/main/denoising_diffusion_pytorch/classifier_free_guidance.py) and [Diffusion Causal Models for Counterfactual Estimation](https://arxiv.org/abs/2202.10166) at [Diff-SCM](https://github.com/vios-s/Diff-SCM/tree/cfdaddd01da607e56db57dcef6ad35881c0486f1)
