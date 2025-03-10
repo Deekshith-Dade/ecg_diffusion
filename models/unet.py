@@ -104,6 +104,7 @@ class Block(nn.Module):
         super().__init__()
         self.proj1 = nn.Conv2d(dim, int(dim_out/2), (1, 3), padding = (0, 1))
         self.proj2 = nn.Conv2d(dim, int(dim_out/2), (7, 1), padding = (3, 0))
+        # self.proj = nn.Conv2d(dim, dim_out, (4, 3), padding=(2, 1))
         self.norm = RMSNorm(dim_out)
         self.act = nn.SiLU()
 
@@ -111,6 +112,7 @@ class Block(nn.Module):
         x1 = self.proj1(x)
         x2 = self.proj2(x)
         x = torch.cat((x1, x2), dim=1)
+        # x = self.proj(x)
         x = self.norm(x)
 
         if exists(scale_shift):

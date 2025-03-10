@@ -3,3 +3,5 @@
 /results
 **/__pycache__
 /*.ipynb
+/wandb
+/counterfactual_samples

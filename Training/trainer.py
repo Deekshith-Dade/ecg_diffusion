@@ -1,6 +1,8 @@
 import torch
 from torch.utils.data import DataLoader
 from torch.optim import Adam
+from zmq import device
+import counterfactual
 from ema_pytorch import EMA
 
 from utils.plot_utils import plot_samples
@@ -10,6 +12,9 @@ import math
 from pathlib import Path
 from tqdm.auto import tqdm
 import itertools
+import wandb
+
+from utils.plot_utils import plot_counterfactual_comparison
 
 def num_to_groups(num, divisor):
     groups = num // divisor
@@ -39,11 +44,16 @@ class Trainer(object):
         fp16 = False,
         split_batches = True,
         convert_image_to = None,
-        dataset = None
+        dataset = None,
+        test_dataset = None,
+        sampling_cond_scale = 6.,
+        counterfactual_sampling_ratio = 0.75,
+        counterfactual_sampling_cond_scale = 6.,
+        logtowandb = False
     ):
         super().__init__()
         
-        assert dataset is not None
+        assert dataset is not None and test_dataset is not None
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.device_ids = range(torch.cuda.device_count())
@@ -57,12 +67,13 @@ class Trainer(object):
         self.image_size = diffusion_model.image_size
         
         self.ds = dataset
+        self.test_ds = test_dataset
         
-        mean, std = self.calculate_mean_std(dataset, self.device)
-        diffusion_model._set_mean_std(mean, std)
+        self.mean, self.std = self.calculate_mean_std(dataset, self.device)
+        diffusion_model._set_mean_std(self.mean, self.std)
         
         print(f"Number of Training Examples: {len(self.ds)}")
-        self.dataloader = DataLoader(self.ds, batch_size=train_batch_size, shuffle = True, pin_memory = True, num_workers=16)
+        self.dataloader = DataLoader(self.ds, batch_size=train_batch_size, shuffle = True, pin_memory = True, num_workers=16 * torch.cuda.device_count())
         
         self.dataloader_iter  = itertools.cycle(self.dataloader)
 
@@ -76,6 +87,11 @@ class Trainer(object):
         
         self.ema = EMA(diffusion_model, beta=ema_decay, update_every = ema_update_every)
         
+        self.sampling_cond_scale = sampling_cond_scale
+        self.counterfactual_sampling_ratio = counterfactual_sampling_ratio
+        self.counterfactual_sampling_cond_scale = counterfactual_sampling_cond_scale
+        self.logtowandb = logtowandb
+        
         self.results_folder = Path(results_folder)
         self.results_folder.mkdir(parents=True, exist_ok=True)
         
@@ -86,7 +102,7 @@ class Trainer(object):
         means = torch.zeros(8).to(device)
         stds = torch.zeros(8).to(device)
         
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False, num_workers=8)
+        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False, num_workers=8 * torch.cuda.device_count())
         
         n_samples = 0
         for batch in tqdm(dataloader, desc="Calculating mean"):
@@ -116,11 +132,45 @@ class Trainer(object):
         
         return means, stds
     
+    def counterfactual_sample(self, size, device):
+        class_0_samples = []
+        class_0_indices = []
+        if self.ds is None:
+            return
+        for idx in range(len(self.test_ds)):
+            sample = self.test_ds[idx]
+            if sample['y'] == 0:  # Class 0
+                class_0_samples.append(sample)
+                class_0_indices.append(idx)
+                if len(class_0_samples) >= size:
+                    break
+
+        # Check if we found enough class 0 samples
+        if len(class_0_samples) < size:
+            print(f"Warning: Only found {len(class_0_samples)} samples of class 0, fewer than batch_size={size}")
+
+        # Create batch from collected samples
+        images = torch.stack([sample['image'] for sample in class_0_samples[:size]]).to(device)
+        actual_classes = torch.tensor([sample['y'] for sample in class_0_samples[:size]], dtype=torch.long).to(device)
+        
+        exogenous_noise, abduction_progression = self.ema.ema_model.ddim_counterfactual_sample_from_clean_to_noisy(images, sampling_ratio=self.counterfactual_sampling_ratio)
+        
+        init_image = exogenous_noise
+        
+        classes = torch.tensor([1] * size, dtype=torch.long).to(device)
+        counterfactual_image, diffusion_progression = self.ema.ema_model.ddim_counterfactual_sample_from_noisy_to_counterfactual(init_image, classes, self.counterfactual_sampling_ratio, cond_scale=self.counterfactual_sampling_cond_scale)
+        
+        
+        fig = plot_counterfactual_comparison(images, counterfactual=counterfactual_image)
+        return images, exogenous_noise, counterfactual_image, fig
+    
     def save(self, milestone):
         
         data = {
             'step': self.step,
             'model': self.model.state_dict(),
+            'mean': self.mean,
+            'std': self.std,
             'opt': self.opt.state_dict(),
             'ema': self.ema.state_dict(),
             'beta_schedule': self.model.module.beta_schedule,
@@ -133,7 +183,6 @@ class Trainer(object):
         with tqdm(initial = self.step, total = self.train_num_steps) as pbar:
             
             while self.step < self.train_num_steps:
-                total_loss = 0.
                 
                 data = next(self.dataloader_iter)
                 
@@ -144,15 +193,16 @@ class Trainer(object):
                 classes = classes.to(self.device)
                 
                 loss = self.model(images, classes=classes)
+                loss = loss.mean()
+                
                 losses.append(loss.item())
-                total_loss += loss.item()
+                
                 
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
 
-                
                 loss.backward()
                 
-                pbar.set_description(f'loss: {total_loss:.6f}')
+                pbar.set_description(f'loss: {loss.item():.6f}')
                 
                 self.opt.step()
                 self.opt.zero_grad()
@@ -164,6 +214,11 @@ class Trainer(object):
                 self.ema.update()
                 
                 if self.step != 0 and self.step % self.save_and_sample_every == 0:
+                    trainingLog = dict(
+                        step = self.step,
+                        train_loss = torch.tensor(losses).mean(),
+                    )
+                    losses = []
                     self.ema.ema_model.eval()
                     import matplotlib.pyplot as plt
                     plt.figure(figsize=(10, 5))
@@ -186,8 +241,18 @@ class Trainer(object):
                     
                     all_images = torch.cat(all_images_list, dim = 0).cpu()
                     path = str(self.results_folder / f'sample-{milestone}.png')
-                    plot_samples(all_images, path)
-                    # utils.save_image(all_images, str(self.results_folder / f'sample-{milestone}.png'), nrow = int(math.sqrt(self.num_samples)))
+                    sample_fig = plot_samples(all_images, path)
+                    trainingLog['samples'] = sample_fig
+                    
+                    plt.close()
+                    _, exogenous_noise, counterfactual_image, counterfactual_fig = self.counterfactual_sample(size=4, device=self.device)
+                    trainingLog['counterfactuals'] = counterfactual_fig
+                    plt.close()
+                    
+                    if self.logtowandb:
+                        
+                        wandb.log(trainingLog)
+
                     self.save(milestone)
                 
                 pbar.update(1)

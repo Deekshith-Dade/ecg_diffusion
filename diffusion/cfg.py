@@ -76,6 +76,9 @@ class GaussianDiffusion(nn.Module):
         
         self.objective = objective
         
+        
+            
+        
         assert objective in {'pred_noise', 'pred_x0', 'pred_v'}, 'objective must be either pred_noise (predict noise) or pred_x0 (predict image start) or pred_v (predict v [v-parameterization as defined in appendix D of progressive distillation paper, used in imagen-video successfully])'
         self.beta_schedule = beta_schedule
         if beta_schedule == 'linear':
@@ -157,14 +160,20 @@ class GaussianDiffusion(nn.Module):
 
         register_buffer('loss_weight', loss_weight)
         
+        if standardize_mean is not None and standardize_std is not None:
+            register_buffer('standardize_mean', standardize_mean)
+            register_buffer('standardize_std', standardize_std)
+        
     @property
     def device(self):
         return self.betas.device
     
     def _set_mean_std(self, mean, std):
-        self.standardize_mean = mean.reshape(1, 1, -1, 1) if mean is not None else None
-        self.standardize_std = std.reshape(1, 1, -1, 1) if std is not None else None
-    
+        standardize_mean = mean.reshape(1, 1, -1, 1) if mean is not None else None
+        standardize_std = std.reshape(1, 1, -1, 1) if std is not None else None
+        self.register_buffer('standardize_mean', standardize_mean)
+        self.register_buffer('standardize_std', standardize_std)
+        
     def _normalize(self, x):
         if self.standardize_mean is not None and self.standardize_std is not None:
             return (x - self.standardize_mean) / self.standardize_std
@@ -359,6 +368,7 @@ class GaussianDiffusion(nn.Module):
     
     @torch.no_grad()
     def ddim_counterfactual_sample_from_noisy_to_counterfactual(self, images, classes, sampling_ratio, cond_scale=6., rescaled_phi=0.7, clip_denoised=True, progress=True):
+        
         batch, device = images.shape[0], images.device
         img = images
         eta = self.ddim_sampling_eta
@@ -401,8 +411,8 @@ class GaussianDiffusion(nn.Module):
             else:
                 final = result_dict
         
-        final = self._unnormalize(final)
-        return (final[-1]["sample"], final) if progress else (final["sample"], [final])
+        
+        return (self._unnormalize(final[-1]["sample"]), final) if progress else (self._unnormalize(final["sample"]), [final])
     
     @autocast('cuda', enabled = False)
     def q_sample(self, x_start, t, noise=None):
