@@ -20,11 +20,11 @@ def main():
     image_size = (8, 2500)
     channels = 1
     dim = 128
-    batch_size = 12 * torch.cuda.device_count()
+    batch_size = 10 * torch.cuda.device_count()
     lr = 3e-4
     training_steps = 100000
-    save_and_sample_every = 1000
-    scale_training_size = 10
+    save_and_sample_every = 1000 / torch.cuda.device_count()
+    scale_training_size = 12
     
     randSeed = 7777
     np.random.seed(randSeed)
@@ -88,6 +88,7 @@ def main():
         allowMismatchTime=False,
         randomCrop=True
     )
+    print(f'Number of Training Examples: {len(trainDataset)}')
     
     testDataset = dataset_regular(
         baseDir = dataDir + 'pythonData/',
@@ -100,10 +101,10 @@ def main():
     )
     
     unetParams = dict(
-                cond_drop_prob=0.20,
+                cond_drop_prob=0.35,
                 dim_mults = (1, 2, 4, 8, 16),
-                attn_dim_heads = 32,
-                attn_heads = 4
+                attn_dim_heads = 64,
+                attn_heads = 8
             )
     
     
@@ -147,25 +148,8 @@ def main():
         adam_betas = (0.9, 0.99),
         num_samples = 5,
         results_folder = f'./results/counter_{formatted_time}',
-        counterfactual_sampling_ratio = 0.25,
+        counterfactual_sampling_ratio = 0.75,
         counterfactual_sampling_cond_scale = 6.
-    )
-    
-    trainer = Trainer(
-        diffusion_model=diffusion,
-        train_batch_size=batch_size,
-        train_lr = lr,
-        train_num_steps=training_steps,
-        ema_update_every=trainerParams['ema_update_every'],
-        adam_betas=trainerParams['adam_betas'],
-        save_and_sample_every=save_and_sample_every,
-        num_samples=trainerParams['num_samples'],
-        results_folder=trainerParams['results_folder'],
-        dataset = trainDataset,
-        test_dataset = testDataset,
-        counterfactual_sampling_ratio=trainerParams['counterfactual_sampling_ratio'],
-        counterfactual_sampling_cond_scale=trainerParams['counterfactual_sampling_cond_scale'],
-        logtowandb = logtowandb
     )
     
     config = dict(
@@ -197,6 +181,25 @@ def main():
             reinit=True,
             name=f"{"counterfactual"}_{datetime.datetime.now()}",
         )
+    
+    trainer = Trainer(
+        diffusion_model=diffusion,
+        train_batch_size=batch_size,
+        train_lr = lr,
+        train_num_steps=training_steps,
+        ema_update_every=trainerParams['ema_update_every'],
+        adam_betas=trainerParams['adam_betas'],
+        save_and_sample_every=save_and_sample_every,
+        num_samples=trainerParams['num_samples'],
+        results_folder=trainerParams['results_folder'],
+        dataset = trainDataset,
+        test_dataset = testDataset,
+        counterfactual_sampling_ratio=trainerParams['counterfactual_sampling_ratio'],
+        counterfactual_sampling_cond_scale=trainerParams['counterfactual_sampling_cond_scale'],
+        logtowandb = logtowandb
+    )
+    
+    
     
     trainer.train()
 

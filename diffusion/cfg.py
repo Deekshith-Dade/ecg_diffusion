@@ -222,7 +222,8 @@ class GaussianDiffusion(nn.Module):
     @torch.no_grad()
     def model_predictions(self, x, t, classes, cond_scale = 6., rescaled_phi = 0.7, clip_x_start = False):
         model_output, model_output_null = self.model.forward_with_cond_scale(x, t, classes, cond_scale = cond_scale, rescaled_phi = rescaled_phi)
-        maybe_clip = partial(torch.clamp, min = -1., max = 1.) if clip_x_start else identity
+        # maybe_clip = partial(torch.clamp, min = -1., max = 1.) if clip_x_start else identity
+        maybe_clip = self.dynamic_thresholding if clip_x_start else identity
 
         if self.objective == 'pred_noise':
             pred_noise = model_output if not self.use_cfg_plus_plus else model_output_null
@@ -251,19 +252,27 @@ class GaussianDiffusion(nn.Module):
 
         return ModelPrediction(pred_noise, x_start)
 
+    def dynamic_thresholding(self, x, scale_factor=2):
+        """Applies dynamic thresholding to prevent amplitude suppression."""
+        std = x.std(dim=3, keepdim=True)  # Compute standard deviation per ECG
+        threshold = scale_factor * std
+        return torch.clamp(x, -threshold, threshold)
+
+    
     @torch.no_grad()
-    def p_mean_variance(self, x, t, classes, cond_scale, rescaled_phi, clip_denoised = True):
+    def p_mean_variance(self, x, t, classes, cond_scale, rescaled_phi, clip_denoised = False):
         preds = self.model_predictions(x, t, classes, cond_scale, rescaled_phi)
         x_start = preds.pred_x_start
         
         if clip_denoised:
-            x_start.clamp_(-1., 1.)
+            x_start = self.dynamic_thresholding(x_start)
+            # x_start.clamp_(-1., 1.)
         
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start, x_t=x, t=t)
         return model_mean, posterior_variance, posterior_log_variance, x_start
     
     @torch.no_grad()
-    def p_sample(self, x, t: int, classes, cond_scale = 6., rescaled_phi = 0.7, clip_denoised=True):
+    def p_sample(self, x, t: int, classes, cond_scale = 6., rescaled_phi = 0.7, clip_denoised=False):
         b, *_, device = *x.shape, x.device
         batched_times = torch.full((x.shape[0],), t, device = x.device, dtype=torch.long)
         model_mean, _, model_log_variance, x_start = self.p_mean_variance(x = x, t = batched_times, classes = classes, cond_scale = cond_scale, rescaled_phi=rescaled_phi, clip_denoised=clip_denoised)
@@ -284,7 +293,7 @@ class GaussianDiffusion(nn.Module):
         return img
 
     @torch.no_grad()
-    def ddim_sample(self, classes, shape, cond_scale=6., rescaled_phi = 0.7, clip_denoised = True):
+    def ddim_sample(self, classes, shape, cond_scale=6., rescaled_phi = 0.7, clip_denoised = False):
         batch, device, total_timesteps, sampling_timesteps, eta, objective = shape[0], self.betas.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
         
         times = torch.linspace(-1, total_timesteps - 1, steps = sampling_timesteps + 1)
@@ -325,7 +334,7 @@ class GaussianDiffusion(nn.Module):
         return sample_fn(classes, (batch_size, channels, self.image_size[0], self.image_size[1]), cond_scale, rescaled_phi)
     
     @torch.no_grad()
-    def ddim_counterfactual_sample_from_clean_to_noisy(self, images, sampling_ratio, cond_scale=6., rescaled_phi = 0.7, clip_denoised = True, progress=True):
+    def ddim_counterfactual_sample_from_clean_to_noisy(self, images, sampling_ratio, cond_scale=6., rescaled_phi = 0.7, clip_denoised = False, progress=True):
         """
             sample x_{t+1}
         """
@@ -367,7 +376,7 @@ class GaussianDiffusion(nn.Module):
         return (final[-1]["sample"], final) if progress else (final["sample"], [final])
     
     @torch.no_grad()
-    def ddim_counterfactual_sample_from_noisy_to_counterfactual(self, images, classes, sampling_ratio, cond_scale=6., rescaled_phi=0.7, clip_denoised=True, progress=True):
+    def ddim_counterfactual_sample_from_noisy_to_counterfactual(self, images, classes, sampling_ratio, cond_scale=6., rescaled_phi=0.7, clip_denoised=False, progress=True):
         
         batch, device = images.shape[0], images.device
         img = images

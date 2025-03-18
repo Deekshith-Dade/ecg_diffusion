@@ -34,6 +34,9 @@ class ECG_KCL_Datasetloader(Dataset):
         
         kclVal = torch.tensor(self.kclVals[item])
         ecgs = torch.tensor(ecgData).unsqueeze(0).float()
+        # temp_ecgs = ecgs.clone()
+        # ecgs[0, 0:2] = temp_ecgs[0, 2:4]
+        # ecgs[0, 2:4] = temp_ecgs[0, 0:2]
         
         if self.randomCrop:
             startIx = 0
@@ -58,6 +61,7 @@ class ECG_KCL_Datasetloader(Dataset):
         item = {}
         item['image'] = ecgs
         item['y'] = 1 if kclVal <= self.high_threshold and kclVal >= self.low_threshold else 0
+        item['kclVal'] = kclVal
         return item
     
     def __len__(self):

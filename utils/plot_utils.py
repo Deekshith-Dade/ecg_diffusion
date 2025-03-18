@@ -28,22 +28,26 @@ def visualizeLeads_comp(data, text, original_ecg, path):
   plt.close()
   
 
-def plot_samples(images, path):
+def plot_samples(images, path, kv=None):
     # images is of shape n, 1, 8, 2500
     visualizeLeads_comp(images[0][0], "Sampled ECG", images[1][0], path)
-    return plot_counterfactual_comparison(images=images, count=2)
+    return plot_counterfactual_comparison(images=images, count=2, kv=kv)
     
     
     
-def plot_counterfactual_comparison(images, counterfactual=None, count=4):
+def plot_counterfactual_comparison(images, counterfactual=None, count=4, kv=None):
   if counterfactual is not None:
     modifications = images - counterfactual
+  if kv is not None:
+        var = kv['key']
+        values = kv['values']
   subDims = [8, count]
-  fig, axes = plt.subplots(subDims[0], subDims[1])
-  plt.suptitle(f'Four Example ECGs')
+  fig, axes = plt.subplots(subDims[0], subDims[1], figsize=(15, 10))
+  plt.subplots_adjust(hspace=0.4, wspace=0.3)
   for i in range(count):
+      
       for lead in range(8):
-          # axes[lead, i].title.set_text(f'D {lead}, {KCLs[i].item()}')
+          axes[lead, i].title.set_text(f'D {var}, {values[i].item()}')
           axes[lead, i].plot(images[i, 0, lead,:].detach().clone().squeeze().cpu().numpy(), 'k', linewidth=1, linestyle='--')
           if counterfactual is not None:
             axes[lead, i].plot(modifications[i, 0, lead, :].detach().clone().squeeze().cpu().numpy(), 'r', linewidth=1, linestyle='--')
