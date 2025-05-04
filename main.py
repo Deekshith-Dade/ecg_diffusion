@@ -9,9 +9,10 @@ import random
 import pandas as pd
 import wandb
 import datetime
+import json
 
 def main():
-    baseDir = '/uu/sci.utah.edu/projects/ClinicalECGs/DeekshithMLECG/kcl_explainability/explainability'
+    baseDir = '/uu/sci.utah.edu/projects/ClinicalECGs/DeekshithMLECG/ecg_counterfactual_diffusion'
     dataDir = '/uu/sci.utah.edu/projects/ClinicalECGs/AllClinicalECGs/'
     
     logtowandb = True
@@ -21,10 +22,10 @@ def main():
     channels = 1
     dim = 128
     batch_size = 10 * torch.cuda.device_count()
-    lr = 3e-4
+    lr = 1e-4
     training_steps = 100000
-    save_and_sample_every = 1000 / torch.cuda.device_count()
-    scale_training_size = 12
+    save_and_sample_every = 1000
+    scale_training_size = 1
     
     randSeed = 7777
     np.random.seed(randSeed)
@@ -100,6 +101,59 @@ def main():
         randomCrop=True
     )
     
+    print("Saving abnormal test samples...")
+    abnormal_samples = []
+    abnormal_count = 0
+
+    # Iterate through the test dataset directly
+    abnormal_count = 0
+    abnormal_ecgs = []
+    abnormal_kcl_vals = []
+    abnormal_paths = []
+    
+    for i in range(len(testDataset)):
+        try:
+            item = testDataset[i]
+            # Check if it's an abnormal sample (y = 0)
+            if item['y'] == 0:
+                abnormal_ecgs.append(item['image'])
+                abnormal_kcl_vals.append(item['kclVal'].item())  # Store the KCL value
+                abnormal_paths.append(item['ecgPath'])  # Store the ECG path
+                abnormal_count += 1
+                
+                # Print progress
+                if abnormal_count % 10 == 0:
+                    print(f"Found {abnormal_count} abnormal samples so far")
+                
+                # # Stop after collecting 100 samples
+                # if abnormal_count >= 100:
+                #     break
+        except Exception as e:
+            print(f"Error processing sample {i}: {e}")
+            continue
+
+    # Check if we found enough samples
+    if abnormal_count < 100:
+        print(f"Warning: Only found {abnormal_count} abnormal samples in the test dataset")
+    else:
+        print(f"Successfully collected {abnormal_count} abnormal samples")
+
+    # Save the abnormal samples, KCL values, and paths in a single file
+    if abnormal_ecgs:
+        abnormal_tensor = torch.stack(abnormal_ecgs)
+        abnormal_kcl_tensor = torch.tensor(abnormal_kcl_vals)
+        
+        # Save as a single dictionary in a file
+        save_data = {
+            'ECGs': abnormal_tensor,
+            'KCLs': abnormal_kcl_tensor,
+            'Paths': abnormal_paths
+        }
+        
+        torch.save(save_data, f"{baseDir}/abnormal_data.pt")
+        print(f"Saved abnormal ECGs, KCL values, and paths to {baseDir}/abnormal_data.pt")
+    
+    
     unetParams = dict(
                 cond_drop_prob=0.35,
                 dim_mults = (1, 2, 4, 8, 16),
@@ -148,7 +202,8 @@ def main():
         adam_betas = (0.9, 0.99),
         num_samples = 5,
         results_folder = f'./results/counter_{formatted_time}',
-        counterfactual_sampling_ratio = 0.75,
+        sampling_cond_scale = 6.,
+        counterfactual_sampling_ratio = 0.25,
         counterfactual_sampling_cond_scale = 6.
     )
     
@@ -194,6 +249,7 @@ def main():
         results_folder=trainerParams['results_folder'],
         dataset = trainDataset,
         test_dataset = testDataset,
+        sampling_cond_scale=trainerParams['sampling_cond_scale'],
         counterfactual_sampling_ratio=trainerParams['counterfactual_sampling_ratio'],
         counterfactual_sampling_cond_scale=trainerParams['counterfactual_sampling_cond_scale'],
         logtowandb = logtowandb

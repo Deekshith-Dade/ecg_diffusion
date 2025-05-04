@@ -9,6 +9,65 @@ import torchvision.transforms as transforms
 class DataLoaderError(Exception):
     pass
 
+class ECG_KCL_Datasetloader_Classify(Dataset):
+	def __init__(self,baseDir='',ecgs=[],kclVals=[],normalize =True, 
+				 normMethod='0to1',rhythmType='Rhythm',allowMismatchTime=True,
+				 mismatchFix='Pad',randomCrop=False,cropSize=2500,expectedTime=5000):
+		self.baseDir = baseDir
+		self.rhythmType = rhythmType
+		self.normalize = normalize
+		self.normMethod = normMethod
+		self.ecgs = ecgs
+		self.kclVals = kclVals
+		self.expectedTime = expectedTime
+		self.allowMismatchTime = allowMismatchTime
+		self.mismatchFix = mismatchFix
+		self.randomCrop = randomCrop
+		self.cropSize = cropSize
+		if self.randomCrop:
+			self.expectedTime = self.cropSize
+
+	def __getitem__(self,item):
+		ecgName = self.ecgs[item].replace('.xml',f'_{self.rhythmType}.npy')
+		ecgPath = os.path.join(self.baseDir,ecgName)
+		ecgData = np.load(ecgPath)
+
+		kclVal = torch.tensor(self.kclVals[item])
+		ecgs = torch.tensor(ecgData).float() #unsqueeze it to give it one channel\
+
+		if self.randomCrop:
+			startIx = 0
+			if ecgs.shape[-1]-self.cropSize > 0:
+				startIx = torch.randint(ecgs.shape[-1]-self.cropSize,(1,))
+			ecgs = ecgs[...,startIx:startIx+self.cropSize]
+
+		if ecgs.shape[-1] != self.expectedTime:
+			if self.allowMismatchTime:
+				if self.mismatchFix == 'Pad':
+					ecgs=F.pad(ecgs,(0,self.expectedTime-ecgs.shape[-1]))
+				if self.mismatchFix == 'Repeat':
+					timeDiff = self.expectedTime - ecgs.shape[-1]
+					ecgs=torch.cat((ecgs,ecgs[...,0:timeDiff]))
+
+			else:
+				raise DataLoaderError('You are not allowed to have mismatching data lengths.')
+
+		if self.normalize:
+			if self.normMethod == '0to1':
+				if not torch.allclose(ecgs,torch.zeros_like(ecgs)):
+					ecgs = ecgs - torch.min(ecgs)
+					ecgs = ecgs / torch.max(ecgs)
+				else:
+					print(f'All zero data for item {item}, {ecgPath}')
+			
+		if torch.any(torch.isnan(ecgs)):
+			print(f'Nans in the data for item {item}, {ecgPath}')
+			raise DataLoaderError('Nans in data')
+		return ecgs, kclVal
+
+	def __len__(self):
+		return len(self.ecgs)
+
 class ECG_KCL_Datasetloader(Dataset):
     def __init__(self, baseDir='', ecgs=[], kclVals=[], low_threshold=4.0, high_threshold=5.0, rhythmType='Rhythm',
                  allowMismatchTime=True, mismatchFix='Pad', randomCrop=False,
@@ -62,6 +121,7 @@ class ECG_KCL_Datasetloader(Dataset):
         item['image'] = ecgs
         item['y'] = 1 if kclVal <= self.high_threshold and kclVal >= self.low_threshold else 0
         item['kclVal'] = kclVal
+        item['ecgPath'] = ecgPath
         return item
     
     def __len__(self):

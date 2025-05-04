@@ -259,9 +259,14 @@ class Trainer(object):
                         classes = torch.tensor([1, 0, 1, 0, 1], dtype=torch.long)
                         classes = classes.to(self.device)
                         all_images_list = []
+                        
+                        single_noise = torch.randn(1, 1, 8, 2500, device=self.device)
+                        expanded_noise = single_noise.expand(self.num_samples, 1, 8, 2500)
+                        noise_to_use = expanded_noise
+                        
                         for n in batches:
                             batch_classes = classes[:n]
-                            images = self.ema.ema_model.sample(batch_classes, cond_scale=6.)
+                            images = self.ema.ema_model.sample(batch_classes, cond_scale=self.sampling_cond_scale, noise=noise_to_use[:n])
                             all_images_list.append(images)
                     
                     all_images = torch.cat(all_images_list, dim = 0).cpu()

@@ -281,9 +281,9 @@ class GaussianDiffusion(nn.Module):
         return pred_img, x_start
 
     @torch.no_grad()
-    def p_sample_loop(self, classes, shape, cond_scale = 6., rescaled_phi = 0.7):
+    def p_sample_loop(self, classes, shape, cond_scale = 6., rescaled_phi = 0.7, noise=None):
         batch, device = shape[0], self.betas.device
-        img = torch.randn(shape, device=device)
+        img = noise if noise is not None else torch.randn(shape, device=device)
         
         x_start = None
         for t in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
@@ -293,14 +293,14 @@ class GaussianDiffusion(nn.Module):
         return img
 
     @torch.no_grad()
-    def ddim_sample(self, classes, shape, cond_scale=6., rescaled_phi = 0.7, clip_denoised = False):
+    def ddim_sample(self, classes, shape, cond_scale=6., rescaled_phi = 0.7, clip_denoised = False, noise=None):
         batch, device, total_timesteps, sampling_timesteps, eta, objective = shape[0], self.betas.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
         
         times = torch.linspace(-1, total_timesteps - 1, steps = sampling_timesteps + 1)
         times = list(reversed(times.int().tolist()))
         time_pairs = list(zip(times[:-1], times[1:]))
         
-        img = torch.randn(shape, device=device)
+        img = noise if noise is not None else torch.randn(shape, device=device)
         
         x_start = None
         
@@ -328,10 +328,10 @@ class GaussianDiffusion(nn.Module):
         return img
     
     @torch.no_grad()
-    def sample(self, classes, cond_scale = 6., rescaled_phi = 0.7):
+    def sample(self, classes, cond_scale = 6., rescaled_phi = 0.7, noise=None):
         batch_size, channels = classes.shape[0], self.channels
         sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
-        return sample_fn(classes, (batch_size, channels, self.image_size[0], self.image_size[1]), cond_scale, rescaled_phi)
+        return sample_fn(classes, (batch_size, channels, self.image_size[0], self.image_size[1]), cond_scale, rescaled_phi, noise=noise)
     
     @torch.no_grad()
     def ddim_counterfactual_sample_from_clean_to_noisy(self, images, sampling_ratio, cond_scale=6., rescaled_phi = 0.7, clip_denoised = False, progress=True):
@@ -348,6 +348,7 @@ class GaussianDiffusion(nn.Module):
         classes = torch.tensor([0] * batch, dtype=torch.long, device=device)
         
         for i in range(int(sampling_timesteps)):
+            print(f"\rClean to Noisy Processing {i}%", end='', flush=True)
             t = torch.tensor([i] * batch, device=device, dtype=torch.long)
             
             pred_noise, x_start, *_ = self.model_predictions(img, t, classes=classes, cond_scale=0., rescaled_phi=rescaled_phi, clip_x_start=clip_denoised)
@@ -385,6 +386,7 @@ class GaussianDiffusion(nn.Module):
         sampling_timesteps = self.num_timesteps * sampling_ratio
         
         for i in reversed(range(int(sampling_timesteps))):
+            print(f"\rNoisy to Counterfactual Processing {i}%", end='', flush=True)
             t = torch.tensor([i] * batch, device=device)
             
             pred_noise, x_start, *_ = self.model_predictions(img, t, classes=classes, cond_scale=cond_scale, rescaled_phi=rescaled_phi, clip_x_start=clip_denoised)

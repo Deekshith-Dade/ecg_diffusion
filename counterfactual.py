@@ -13,29 +13,45 @@ import matplotlib.pyplot as plt
 
 def load_unet_model(path):
     
-    checkpoint = torch.load(path, weights_only=False)
+    checkpoint = torch.load(path, weights_only=False, map_location=torch.device('cpu'))
     
     num_classes = 2
     channels = 1
     
     model = Unet(
-        dim= 128,
+        dim=128,
         channels=channels,
         dim_mults=(1, 2, 4, 8, 16),
         num_classes=num_classes,
         cond_drop_prob=0.35,
+        attn_dim_head=64,
+        attn_heads=8
         )
     
-    checkpoint_state_dict = checkpoint["model"]
-    new_state_dict = {k.replace('module.model.', ''): v for k, v in checkpoint_state_dict.items()}
-    checkpoint["model"] = new_state_dict
-    model.load_state_dict(checkpoint["model"], strict=False)
-    return model, checkpoint
+    
+    checkpoint_state_dict = checkpoint.get("model")
+    state_dict = {key.replace('module.model.', ''): value for key, value in checkpoint_state_dict.items() if 'module.model' in key}
+
+    model.load_state_dict(state_dict, strict=True)
+    
+    standardize_mean = checkpoint.get('mean')
+    standardize_std = checkpoint.get('std')
+    
+    if standardize_mean is None or standardize_std is None:
+        print("Warning: Mean or std not found in checkpoint, using defaults")
+    else:
+        print(f"Loaded standardization parameters - Mean: {standardize_mean}")
+        print(f"Loaded standardization parameters - Std: {standardize_std}")
+    
+    return model, standardize_mean, standardize_std
 
 
 def main():
-    path = "/uu/sci.utah.edu/projects/ClinicalECGs/DeekshithMLECG/ecg_counterfactual_diffusion/results/part7/model-1.pt"
-    model, checkpoint = load_unet_model(path)
+    # Use a more recent successful model checkpoint
+    path = "/uu/sci.utah.edu/projects/ClinicalECGs/DeekshithMLECG/ecg_counterfactual_diffusion/results/counter_2025-03-23_13-10-42/model-115.pt"
+    print(f"Loading model from {path}")
+    model, standardize_mean, standardize_std = load_unet_model(path)
+    print("Model loaded successfully")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataDir = '/uu/sci.utah.edu/projects/ClinicalECGs/AllClinicalECGs/'
     
@@ -45,35 +61,45 @@ def main():
     dim = 128
     batch_size = 8
     
-    classes = torch.tensor([1] * batch_size, dtype=torch.long)
-    classes = classes.to(device)
+    target_classes = torch.tensor([1] * batch_size, dtype=torch.long).to(device)
     
-    results_folder = Path(f'./counterfactual_samples/sample1')
+    # Use a more recent model checkpoint that produced good results during training
+    results_folder = Path(f'./counterfactual_samples/test')
     results_folder.mkdir(parents=True, exist_ok=True)
     
-    
-    
+    # Create diffusion model with proper standardization parameters
+    print("Creating diffusion model")
     diffusion = GaussianDiffusion(
         model=model,
         image_size=image_size,
-        timesteps = 1000,
-        sampling_timesteps=100,
-        beta_schedule=getattr(checkpoint, 'beta_schedule', 'cosine'),
+        timesteps=1000,
+        sampling_timesteps=1000,  # Increased from 100 for better quality
+        objective='pred_noise',
+        beta_schedule='cosine',  # Use the beta schedule from checkpoint if available
         ddim_sampling_eta=1.0,
-        standardize_mean=checkpoint['model']['module.standardize_mean'],
-        standardize_std=checkpoint['model']['module.standardize_std']
     ).to(device)
-    
+    standardize_mean = standardize_mean.to(device)
+    standardize_std = standardize_std.to(device)
+    diffusion._set_mean_std(standardize_mean, standardize_std)
+    print("Diffusion model created successfully")
    
+    # Step 1: Generate some random samples with class 1 (for comparison)
+    print("Generating random samples with conditioning...")
+    random_samples = diffusion.sample(target_classes, cond_scale=6.0).cpu()
+    kv = dict(
+                key = 'class',
+                values = target_classes
+            )
+    plot_samples(random_samples, str(results_folder/f'random_sample_class1.png'), kv=kv)
     
-    output = diffusion.sample(classes, cond_scale=5.).cpu()
-    plot_samples(output, str(results_folder/f'sample.png'))
-    
-    import pdb; pdb.set_trace()
-    
+    # Load test dataset for counterfactual generation
+    print("Loading test dataset...")
     randSeed = 7777
     np.random.seed(randSeed)
+    random.seed(randSeed)
+    torch.manual_seed(randSeed)
     
+    # Setup the test dataset
     timeCutoff = 900 #seconds
     lowerCutoff = 0 #seconds
     
@@ -101,7 +127,7 @@ def main():
     numECGs = len(kclCohort)
     numPatients = len(np.unique(kclCohort['PatId']))
     
-    print('setting up train/val split')
+    print('Setting up train/val split')
     numTest = int(0.1 * numPatients)
     numTrain = numPatients - numTest
     assert (numPatients == numTrain + numTest), "Train/Test spilt incorrectly"
@@ -135,6 +161,7 @@ def main():
     )
     
     # Collect a batch of class 0 samples
+    print("Collecting class 0 samples for counterfactual generation...")
     class_0_samples = []
     class_0_indices = []
 
@@ -149,27 +176,61 @@ def main():
     # Check if we found enough class 0 samples
     if len(class_0_samples) < batch_size:
         print(f"Warning: Only found {len(class_0_samples)} samples of class 0, fewer than batch_size={batch_size}")
+        # Adjust batch size if needed
+        batch_size = len(class_0_samples)
+        target_classes = target_classes[:batch_size]
 
     # Create batch from collected samples
-    images = torch.stack([sample['image'] for sample in class_0_samples[:batch_size]]).to(device)
-    actual_classes = torch.tensor([sample['y'] for sample in class_0_samples[:batch_size]], dtype=torch.long).to(device)
-
-    print(f"Created batch with {images.shape[0]} samples of class 0")
+    source_images = torch.stack([sample['image'] for sample in class_0_samples[:batch_size]]).to(device)
+    source_classes = torch.tensor([sample['y'] for sample in class_0_samples[:batch_size]], dtype=torch.long).to(device)
     
-    sampling_ratio = 0.75
-    exogenous_noise, abduction_progression = diffusion.ddim_counterfactual_sample_from_clean_to_noisy(images, sampling_ratio=sampling_ratio)
-    print("Done getting the noise")
+    print(f"Created batch with {source_images.shape[0]} samples of class 0")
+    kv = dict(
+                key = 'class',
+                values = source_classes
+            )
+    # Save the original images for comparison
+    plot_samples(source_images.cpu(), str(results_folder/f'original_class0.png'), kv=kv)
     
-    init_image = exogenous_noise
-    cond_scale = 6.
+    # Step 2: Generate counterfactuals (convert class 0 to class 1)
+    print("Starting counterfactual generation process...")
     
-    counterfactual_image, diffusion_progression = diffusion.ddim_counterfactual_sample_from_noisy_to_counterfactual(init_image, classes, sampling_ratio, cond_scale=cond_scale)
-    print("Done getting the counterfactuals")
-    import pdb; pdb.set_trace()
+    # First, convert the clean images to noisy versions 
+    sampling_ratio = 0.25  # Changed to match training configuration (25% instead of 75%)
+    print("Converting clean images to noisy versions...")
+    noisy_images, noise_progression = diffusion.ddim_counterfactual_sample_from_clean_to_noisy(
+        source_images, 
+        sampling_ratio=sampling_ratio,
+        progress=True
+    )
+    print("Done converting to noise")
+    kv = dict(
+                key = 'class',
+                values = source_classes
+            )
+    # Save the noisy intermediate result
+    plot_samples(noisy_images.cpu(), str(results_folder/f'noisy_intermediate.png'), kv=kv)
     
+    # Now generate counterfactuals by conditioning on the target class
+    print("Generating counterfactuals from noisy images...")
+    counterfactual_images, diffusion_progression = diffusion.ddim_counterfactual_sample_from_noisy_to_counterfactual(
+        noisy_images, 
+        target_classes, 
+        sampling_ratio=sampling_ratio, 
+        cond_scale=6.0,
+        progress=True
+    )
+    print("Done generating counterfactuals")
+    kv = dict(
+                key = 'class',
+                values = target_classes
+            )
+    # Save the counterfactual results
+    plot_samples(counterfactual_images.cpu(), str(results_folder/f'counterfactual_class1.png'), kv=kv)
     
+   
     
+    print(f"All results saved to {results_folder}")
     
-
 if __name__ == "__main__":
     main()
