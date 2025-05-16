@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import Dataset
 import os
 import torch.nn.functional as F
+import json
 # import Loader
 import torchvision.transforms as transforms
 
@@ -120,7 +121,8 @@ class ECG_KCL_Datasetloader(Dataset):
         item = {}
         item['image'] = ecgs
         item['y'] = 1 if kclVal <= self.high_threshold and kclVal >= self.low_threshold else 0
-        item['kclVal'] = kclVal
+        item['key'] = 'kclVal'
+        item['val'] = kclVal
         item['ecgPath'] = ecgPath
         return item
     
@@ -198,3 +200,103 @@ class ECG_KCL_Augs_Datasetloader(Dataset):
 
 	def __len__(self):
 		return len(self.ecgs)
+
+class ECG_LVEF_DatasetLoader(Dataset):
+    
+    def __init__(self, baseDir='', patients=[], normalize=True, normMethod='unitrange', rhythmType='Rhythm', numECGstoFind=1):
+        self.baseDir = baseDir
+        self.rhythmType = rhythmType
+        self.normalize = normalize
+        self.normMethod = normMethod
+        self.fileList = []
+        self.patientLookup = []
+
+        if len(patients) == 0:
+            self.patients = os.listdir(baseDir)
+        else:
+            self.patients = patients
+        
+        if type(self.patients[0]) is not str:
+            self.patients = [str(pat) for pat in self.patients]
+        
+        if numECGstoFind == 'all':
+            for pat in self.patients:
+                self.findEcgs(pat, 'all')
+        else:
+            for pat in self.patients:
+                self.findEcgs(pat, numECGstoFind)
+    
+    def findEcgs(self, patient, numberToFind=1):
+        patientInfoPath = os.path.join(self.baseDir, patient, 'patientData.json')
+        patientInfo = json.load(open(patientInfoPath))
+        numberOfEcgs = patientInfo['numberOfECGs']
+
+        if(numberToFind == 1) | (numberOfEcgs == 1):
+            for i in range(2):
+                ecgId = str(patientInfo["ecgFileIds"][0])
+                zeros = 5 - len(ecgId)
+                ecgId = "0"*zeros+ ecgId
+                self.fileList.append(os.path.join(patient,
+                                    f'ecg_0',
+                                    f'{ecgId}_{self.rhythmType}.npy'))
+                self.patientLookup.append(f"{patient}_{i}")
+        else:
+            for ecgIx in range(numberOfEcgs):
+                for i in range(2):
+                    self.fileList.append(os.path.join(patient,
+                                                f'ecg_{ecgIx}',
+                                                f'{patientInfo["ecgFields"][ecgIx]}_{self.rhythmType}.npy'))
+                    self.patientLookup.append(f"{patient}_{i}")
+        
+    
+    def __getitem__(self, item):
+        patient = self.patientLookup[item][:-2]
+        segment = self.patientLookup[item][-1]
+
+        patientInfoPath = os.path.join(self.baseDir, patient, 'patientData.json')
+        patientInfo = json.load(open(patientInfoPath))
+        
+        ecgPath = os.path.join(self.baseDir,
+                               self.fileList[item])
+        
+        ecgData = np.load(ecgPath)
+        if(segment == '0'):
+            ecgData = ecgData[:, 0:2500]
+        else:
+            ecgData = ecgData[:, 2500:]
+
+        ejectionFraction = torch.tensor(patientInfo['ejectionFraction'])
+        ecgs = torch.tensor(ecgData).unsqueeze(0).float()
+
+        if self.normalize:
+            if self.normMethod == '0to1':
+                if not torch.allclose(ecgs, torch.zeros_like(ecgs)):
+                    ecgs = ecgs - torch.min(ecgs)
+                    ecgs = ecgs / torch.max(ecgs)
+                else:
+                    print(f'All zero data for item {item}, {ecgPath}')
+            elif self.normMethod == 'unitrange':
+                if not torch.allclose(ecgs, torch.zeros_like(ecgs)):
+                    for lead in range(ecgs.shape[0]):
+                        frame = ecgs[lead]
+                        frame = (frame - torch.min(frame)) / (torch.max(frame) - torch.min(frame) + 1e-8)
+                        frame = frame - 0.5
+                        ecgs[lead,:] = frame.unsqueeze(0)
+                else:
+                    print(f'All zero data for item {item}, {ecgPath}')
+        
+        if torch.any(torch.isnan(ecgs)):
+            print(f"NANs in the data for item {item}, {ecgPath}")
+        
+        item = {}
+        item['image'] = ecgs
+        item['y'] = 1 if ejectionFraction >= 40.0 else 0
+        item['key'] = 'LVEF'
+        item['val'] = ejectionFraction
+        item['ecgPath'] = ecgPath
+        
+        return item
+    
+    def __len__(self):
+        return len(self.fileList)
+

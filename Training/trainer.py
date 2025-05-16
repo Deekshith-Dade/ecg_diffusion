@@ -153,10 +153,10 @@ class Trainer(object):
 
         # Create batch from collected samples
         unhealthy_images = torch.stack([sample['image'] for sample in class_0_samples[:size]]).to(device)
-        unhealthy_kcls = torch.stack([sample['kclVal'] for sample in class_0_samples[:size]]).to(device)
+        unhealthy_vals = torch.stack([sample['val'] for sample in class_0_samples[:size]]).to(device)
         
         healthy_images = torch.stack([sample['image'] for sample in class_1_samples[:size]]).to(device)
-        healthy_kcls = torch.stack([sample['kclVal'] for sample in class_1_samples[:size]]).to(device)
+        healthy_vals = torch.stack([sample['val'] for sample in class_1_samples[:size]]).to(device)
         
         # Unhealthy to Healthy Counterfactual
         exogenous_noise, abduction_progression = self.ema.ema_model.ddim_counterfactual_sample_from_clean_to_noisy(unhealthy_images, sampling_ratio=self.counterfactual_sampling_ratio)
@@ -165,8 +165,8 @@ class Trainer(object):
         counterfactual_image, diffusion_progression = self.ema.ema_model.ddim_counterfactual_sample_from_noisy_to_counterfactual(init_image, classes, self.counterfactual_sampling_ratio, cond_scale=self.counterfactual_sampling_cond_scale)
        
         un_kv = dict(
-            key = 'KCLs',
-            values = unhealthy_kcls
+            key = sample['key'],
+            values = unhealthy_vals
         )
         unhealth_to_healthy_fig = plot_counterfactual_comparison(unhealthy_images, counterfactual=counterfactual_image, kv=un_kv)
         if trainingLog:
@@ -180,8 +180,8 @@ class Trainer(object):
         counterfactual_image, diffusion_progression = self.ema.ema_model.ddim_counterfactual_sample_from_noisy_to_counterfactual(init_image, classes, self.counterfactual_sampling_ratio, cond_scale=self.counterfactual_sampling_cond_scale)
        
         he_kv = dict(
-            key = 'KCLs',
-            values = healthy_kcls
+            key = sample['key'],
+            values = healthy_vals
         )
         healthy_to_unhealthy_fig = plot_counterfactual_comparison(unhealthy_images, counterfactual=counterfactual_image, kv=he_kv)
         if trainingLog:

@@ -3,6 +3,7 @@ from diffusion.cfg import GaussianDiffusion
 from models.unet import Unet
 from Training.trainer import Trainer
 import dataset.DataTools as DataTools
+from dataset.utils import dataprepLVEF
 
 import torch
 import numpy as np
@@ -12,11 +13,10 @@ import wandb
 import datetime
 import json
 
-from dataset.utils import getKCLTrainTestDataset
+from dataset.utils import dataprepLVEF, getKCLTrainTestDataset, splitPatientsLVEF
 
 def main():
-    baseDir = '/uu/sci.utah.edu/projects/ClinicalECGs/DeekshithMLECG/ecg_counterfactual_diffusion'
-    dataDir = '/uu/sci.utah.edu/projects/ClinicalECGs/AllClinicalECGs/'
+    dataDir = '/uu/sci.utah.edu/projects/ClinicalECGs/LVEFCohort/pythonData/'
     
     logtowandb = True
     
@@ -29,8 +29,9 @@ def main():
     training_steps = 100000
     save_and_sample_every = 1000
     scale_training_size = 1
-    
-    trainDataset, testDataset, kclTaskParams, timeCutoff, lowerCutoff, randSeed = getKCLTrainTestDataset(scale_training_size, dataDir)
+    randSeed = 7777
+    splitPatientsLVEF(dataDir, randSeed)
+    trainDataset, testDataset = dataprepLVEF(dataDir)
     print(f'Number of Training Examples: {len(trainDataset)}')
 
     unetParams = dict(
@@ -80,7 +81,7 @@ def main():
         ema_update_every = 10,
         adam_betas = (0.9, 0.99),
         num_samples = 5,
-        results_folder = f'./results/counter_{formatted_time}',
+        results_folder = f'./lvef_results/counter_{formatted_time}',
         sampling_cond_scale = 6.,
         counterfactual_sampling_ratio = 0.25,
         counterfactual_sampling_cond_scale = 6.
@@ -97,9 +98,6 @@ def main():
         save_and_sample_every=save_and_sample_every,
         scale_training_size = scale_training_size,
         randSeed = randSeed,
-        timeCutoff = timeCutoff,
-        lowerCutoff = lowerCutoff,
-        kclTaskParams = kclTaskParams,
         unetParams = unetParams,
         diffusionParams = diffusionParams,
         
@@ -107,7 +105,7 @@ def main():
     
     if logtowandb:
         wandbrun = wandb.init(
-            project="CounterfactualDiff",
+            project="CounterfactualDiff_LVEF",
             notes=f"",
             tags=["training","KCL"],
             config=config,

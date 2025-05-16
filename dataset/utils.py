@@ -9,6 +9,143 @@ import torch
 import os
 
 
+def splitPatientsLVEF(dataDir, seed):
+    start = time.time()
+    normEcgs = False
+
+    # Loading Data
+    print('Finding Patients')
+    allData = DataTools.ECG_LVEF_DatasetLoader(baseDir=dataDir, normalize=normEcgs)
+    patientIds = np.array(allData.patients)
+    numPatients = patientIds.shape[0]
+
+    # Data
+    train_split = 0.9
+    num_train = int(train_split * numPatients)
+    num_validation = numPatients - num_train
+
+    patientInds = list(range(numPatients))
+    random.Random(seed).shuffle(patientInds)
+
+    pre_train_patient_indices = patientInds[:num_train]
+    validation_patient_indices = patientInds[num_train:num_train + num_validation]
+
+    pre_train_patients = patientIds[pre_train_patient_indices].squeeze()
+    validation_patients = patientIds[validation_patient_indices].squeeze()
+
+    with open('lvef_patient_splits/pre_train_patients.pkl', 'wb') as file:
+        pickle.dump(pre_train_patients, file)
+    with open('lvef_patient_splits/validation_patients.pkl', 'wb') as file:
+        pickle.dump(validation_patients, file)
+    print(f"Out of Total {numPatients} Splitting {len(pre_train_patients)} for Training, {len(validation_patients)} for validation")
+    print(f'The process took {time.time()-start} seconds')
+
+def dataprepLVEF(dataDir):
+    normEcgs = False
+
+    print("Preparing Data For Finetuning")
+    with open('lvef_patient_splits/validation_patients.pkl', 'rb') as file:
+        validation_patients = pickle.load(file)
+    
+    with open('lvef_patient_splits/pre_train_patients.pkl', 'rb') as file:
+        pre_train_patients = pickle.load(file)
+    
+    # num_train_patients = len(pre_train_patients)
+    
+
+    # patientInds = list(range(num_train_patients))
+    # random.shuffle(patientInds)
+    
+    # finetuning_patients = pre_train_patients[patientInds]
+
+    train_dataset = DataTools.ECG_LVEF_DatasetLoader(baseDir=dataDir, patients=pre_train_patients.tolist(), normalize=normEcgs)
+    
+    test_dataset = DataTools.ECG_LVEF_DatasetLoader(baseDir=dataDir, patients=validation_patients.tolist(), normalize=normEcgs)
+    
+
+    print(f"Preparing Training with {len(train_dataset)} number of ECGs and validation with {len(test_dataset)} number of ECGs")
+
+    return train_dataset, test_dataset
+
+
+
+
+def getKCLTrainTestDataset(scale_training_size, dataDir):
+    randSeed = 7777
+    np.random.seed(randSeed)
+    
+    timeCutoff = 900 #seconds
+    lowerCutoff = 0 #seconds
+    
+    kclCohort = np.load(dataDir+'kclCohort_v1.npy',allow_pickle=True)
+    data_types = {
+        'DeltaTime': float,   
+        'KCLVal': float,    
+        'ECGFile': str,     
+        'PatId': int,       
+        'KCLTest': str      
+    }
+    kclCohort = pd.DataFrame(kclCohort,columns=['DeltaTime','KCLVal','ECGFile','PatId','KCLTest']) 
+    for key in data_types.keys():
+        kclCohort[key] = kclCohort[key].astype(data_types[key])
+
+    kclCohort = kclCohort[kclCohort['DeltaTime']<=timeCutoff]
+    kclCohort = kclCohort[kclCohort['DeltaTime']>lowerCutoff]
+
+    kclCohort = kclCohort.dropna(subset=['DeltaTime']) 
+    kclCohort = kclCohort.dropna(subset=['KCLVal']) 
+
+    ix = kclCohort.groupby('ECGFile')['DeltaTime'].idxmin()
+    kclCohort = kclCohort.loc[ix]
+
+    numECGs = len(kclCohort)
+    numPatients = len(np.unique(kclCohort['PatId']))
+    
+    print('setting up train/val split')
+    numTest = int(0.1 * numPatients)
+    numTrain = numPatients - numTest
+    assert (numPatients == numTrain + numTest), "Train/Test spilt incorrectly"
+    RandomSeedSoAlswaysGetSameDatabseSplit = 1
+    patientIds = list(np.unique(kclCohort['PatId']))
+    random.Random(RandomSeedSoAlswaysGetSameDatabseSplit).shuffle(patientIds)
+    
+    trainPatientInds = patientIds[:numTrain]
+    testPatientInds = patientIds[numTrain:numTest + numTrain]
+    trainECGs = kclCohort[kclCohort['PatId'].isin(trainPatientInds)]
+    testECGs = kclCohort[kclCohort['PatId'].isin(testPatientInds)]
+    
+    desiredTrainingAmount = len(trainECGs) // scale_training_size
+    if desiredTrainingAmount != 'all':
+        if len(trainECGs)>desiredTrainingAmount:
+            trainECGs = trainECGs.sample(n=desiredTrainingAmount)
+            
+    kclTaskParams = dict(highThresh = 5, lowThresh=4, highThreshRestrict=8.5)
+    trainECGs = trainECGs[(trainECGs['KCLVal']>=kclTaskParams['lowThresh']) & (trainECGs['KCLVal']<=kclTaskParams['highThreshRestrict'])]
+    testECGs = testECGs[(testECGs['KCLVal']>=kclTaskParams['lowThresh']) & (testECGs['KCLVal']<=kclTaskParams['highThreshRestrict'])]
+    
+    dataset_regular = DataTools.ECG_KCL_Datasetloader
+    trainDataset = dataset_regular(
+        baseDir = dataDir + 'pythonData/',
+        ecgs = trainECGs['ECGFile'].tolist(),
+        low_threshold= kclTaskParams['lowThresh'],
+        high_threshold = kclTaskParams['highThresh'],
+        kclVals=trainECGs['KCLVal'].tolist(),
+        allowMismatchTime=False,
+        randomCrop=True
+    )
+    print(f'Number of Training Examples: {len(trainDataset)}')
+    
+    testDataset = dataset_regular(
+        baseDir = dataDir + 'pythonData/',
+        ecgs = testECGs['ECGFile'].tolist(),
+        low_threshold= kclTaskParams['lowThresh'],
+        high_threshold = kclTaskParams['highThresh'],
+        kclVals=testECGs['KCLVal'].tolist(),
+        allowMismatchTime=False,
+        randomCrop=True
+    )
+
+    return trainDataset, testDataset, kclTaskParams, timeCutoff, lowerCutoff, randSeed
 
 def splitKCLPatients(seed):
     start = time.time()
@@ -135,4 +272,55 @@ def dataprepKCL(args):
     print(f"Preparing Finetuning with {dataset_lengths} number of ECGs and validation with {len(test_dataset)} number of ECGs")
 
     return train_loaders, test_loader
-  
+
+    # print("Saving abnormal test samples...")
+    # abnormal_samples = []
+    # abnormal_count = 0
+
+    # # Iterate through the test dataset directly
+    # abnormal_count = 0
+    # abnormal_ecgs = []
+    # abnormal_kcl_vals = []
+    # abnormal_paths = []
+    
+    # for i in range(len(testDataset)):
+    #     try:
+    #         item = testDataset[i]
+    #         # Check if it's an abnormal sample (y = 0)
+    #         if item['y'] == 0:
+    #             abnormal_ecgs.append(item['image'])
+    #             abnormal_kcl_vals.append(item['kclVal'].item())  # Store the KCL value
+    #             abnormal_paths.append(item['ecgPath'])  # Store the ECG path
+    #             abnormal_count += 1
+                
+    #             # Print progress
+    #             if abnormal_count % 10 == 0:
+    #                 print(f"Found {abnormal_count} abnormal samples so far")
+                
+    #             # # Stop after collecting 100 samples
+    #             # if abnormal_count >= 100:
+    #             #     break
+    #     except Exception as e:
+    #         print(f"Error processing sample {i}: {e}")
+    #         continue
+
+    # # Check if we found enough samples
+    # if abnormal_count < 100:
+    #     print(f"Warning: Only found {abnormal_count} abnormal samples in the test dataset")
+    # else:
+    #     print(f"Successfully collected {abnormal_count} abnormal samples")
+
+    # # Save the abnormal samples, KCL values, and paths in a single file
+    # if abnormal_ecgs:
+    #     abnormal_tensor = torch.stack(abnormal_ecgs)
+    #     abnormal_kcl_tensor = torch.tensor(abnormal_kcl_vals)
+        
+    #     # Save as a single dictionary in a file
+    #     save_data = {
+    #         'ECGs': abnormal_tensor,
+    #         'KCLs': abnormal_kcl_tensor,
+    #         'Paths': abnormal_paths
+    #     }
+        
+    #     torch.save(save_data, f"{baseDir}/abnormal_data.pt")
+    #     print(f"Saved abnormal ECGs, KCL values, and paths to {baseDir}/abnormal_data.pt")
