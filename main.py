@@ -24,11 +24,11 @@ def main():
     image_size = (8, 2500)
     channels = 1
     dim = 128
-    batch_size = 10 * torch.cuda.device_count()
+    batch_size = 8 * torch.cuda.device_count()
     lr = 1e-4
     training_steps = 100000
     save_and_sample_every = 1000
-    scale_training_size = 1
+    scale_training_size = 12
     
     trainDataset, testDataset, kclTaskParams, timeCutoff, lowerCutoff, randSeed = getKCLTrainTestDataset(scale_training_size, dataDir)
     print(f'Number of Training Examples: {len(trainDataset)}')
@@ -83,7 +83,8 @@ def main():
         results_folder = f'./results/counter_{formatted_time}',
         sampling_cond_scale = 6.,
         counterfactual_sampling_ratio = 0.25,
-        counterfactual_sampling_cond_scale = 6.
+        counterfactual_sampling_cond_scale = 6.,
+        eval_classification_model_path = "classification_runs/results_Counterfactual_KCL_Jun01_17-32-02_cibcgpu4_ECG_SpatioTemporalNet1D_ep_0040/43/43_100_perc_PreTrained-Finetuned_best.pth",
     )
     
     config = dict(
@@ -102,6 +103,7 @@ def main():
         kclTaskParams = kclTaskParams,
         unetParams = unetParams,
         diffusionParams = diffusionParams,
+        trainerParams = trainerParams,
         
     )
     
@@ -131,7 +133,8 @@ def main():
         sampling_cond_scale=trainerParams['sampling_cond_scale'],
         counterfactual_sampling_ratio=trainerParams['counterfactual_sampling_ratio'],
         counterfactual_sampling_cond_scale=trainerParams['counterfactual_sampling_cond_scale'],
-        logtowandb = logtowandb
+        logtowandb = logtowandb,
+        eval_classification_model_path = trainerParams['eval_classification_model_path'],
     )
     
     

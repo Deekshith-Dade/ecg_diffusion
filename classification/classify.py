@@ -16,7 +16,7 @@ import Training
 from dataset.utils import dataprepKCL, splitKCLPatients
 
 from torch.utils.tensorboard import SummaryWriter
-import parameters
+import classification.parameters as parameters
 import json
 import time
 import wandb
@@ -59,7 +59,7 @@ def seed_everything(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
-def create_model(args, baseline, finetune=False):
+def create_model(pretrained, baseline, finetune=False):
     print("=> Creating Model")
     
     model = Networks.ECG_SpatioTemporalNet1D(**parameters.spatioTemporalParams_1D, classification=True, avg_embeddings=True)
@@ -68,9 +68,9 @@ def create_model(args, baseline, finetune=False):
         print(f"Returning Baseline Model")
         return model
 
-    if args.pretrained is not None:
-        checkpoint = torch.load(args.pretrained, map_location="cpu")
-        state_dict = checkpoint['state_dict']
+    if pretrained is not None:
+        checkpoint = torch.load(pretrained, map_location="cpu")
+        state_dict = checkpoint.get("state_dict", checkpoint)
 
         for k in list(state_dict.keys()):
             if k.startswith("module.") and not k.startswith("module.finalLayer."):
@@ -86,7 +86,7 @@ def create_model(args, baseline, finetune=False):
             if not name.startswith("finalLayer"):
                 param.requires_grad = finetune
             
-        print(f"Pre-Trained Model Loaded from {args.pretrained}")
+        print(f"Pre-Trained Model Loaded from {pretrained}")
         
     else:
         print("No Pretrained Model Found")
@@ -137,17 +137,17 @@ def main():
             for x in [0,1,2]:
                 print(f"Training on {training_size} ECGs and validation on {len(val_loader.dataset)} ECGs.")
                 if x == 0:
-                    model = create_model(args, baseline=True)
+                    model = create_model(args.pretrained, baseline=True)
                     lr = args.lr[0]
                     key = f"Baseline"
                     print(f"Training Baseline Model")
                 elif x == 1:
-                    model = create_model(args, baseline=False, finetune=False)
+                    model = create_model(args.pretrained, baseline=False, finetune=False)
                     lr = args.lr[1]
                     key = f"PreTrained-Frozen"
                     print(f"Training Pretrained Model with Frozen Parameters")
                 elif x == 2:
-                    model = create_model(args, baseline=False, finetune=True)
+                    model = create_model(args.pretrained, baseline=False, finetune=True)
                     fast_lr = args.lr[1]
                     slow_lr = args.lr[2]
                     key = f"PreTrained-Finetuned"
