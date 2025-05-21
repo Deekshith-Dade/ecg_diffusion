@@ -232,26 +232,23 @@ class ECG_LVEF_DatasetLoader(Dataset):
         numberOfEcgs = patientInfo['numberOfECGs']
 
         if(numberToFind == 1) | (numberOfEcgs == 1):
-            for i in range(2):
-                ecgId = str(patientInfo["ecgFileIds"][0])
-                zeros = 5 - len(ecgId)
-                ecgId = "0"*zeros+ ecgId
-                self.fileList.append(os.path.join(patient,
-                                    f'ecg_0',
-                                    f'{ecgId}_{self.rhythmType}.npy'))
-                self.patientLookup.append(f"{patient}_{i}")
+            ecgId = str(patientInfo["ecgFileIds"][0])
+            zeros = 5 - len(ecgId)
+            ecgId = "0"*zeros+ ecgId
+            self.fileList.append(os.path.join(patient,
+                                f'ecg_0',
+                                f'{ecgId}_{self.rhythmType}.npy'))
+            self.patientLookup.append(f"{patient}")
         else:
             for ecgIx in range(numberOfEcgs):
-                for i in range(2):
-                    self.fileList.append(os.path.join(patient,
-                                                f'ecg_{ecgIx}',
-                                                f'{patientInfo["ecgFields"][ecgIx]}_{self.rhythmType}.npy'))
-                    self.patientLookup.append(f"{patient}_{i}")
+                self.fileList.append(os.path.join(patient,
+                                            f'ecg_{ecgIx}',
+                                            f'{patientInfo["ecgFields"][ecgIx]}_{self.rhythmType}.npy'))
+                self.patientLookup.append(f"{patient}")
         
     
     def __getitem__(self, item):
-        patient = self.patientLookup[item][:-2]
-        segment = self.patientLookup[item][-1]
+        patient = self.patientLookup[item]
 
         patientInfoPath = os.path.join(self.baseDir, patient, 'patientData.json')
         patientInfo = json.load(open(patientInfoPath))
@@ -260,10 +257,7 @@ class ECG_LVEF_DatasetLoader(Dataset):
                                self.fileList[item])
         
         ecgData = np.load(ecgPath)
-        if(segment == '0'):
-            ecgData = ecgData[:, 0:2500]
-        else:
-            ecgData = ecgData[:, 2500:]
+        ecgData = ecgData[:, 0:2500]
 
         ejectionFraction = torch.tensor(patientInfo['ejectionFraction'])
         ecgs = torch.tensor(ecgData).unsqueeze(0).float()

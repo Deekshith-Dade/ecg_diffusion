@@ -205,50 +205,65 @@ class Trainer(object):
         return unhealth_to_healthy_fig, healthy_to_unhealthy_fig
 
 
-    def evaluation_classification_model(self, trainingLog=None):
+    def evaluation_classification_model(self, trainingLog=None, batch_size=16):
         print("Evaluating Classification Model")
         if self.classification_model_path is None:
             print("No classification model path provided. Skipping evaluation.")
             return
-        
+
         if not hasattr(self, 'classification_model'):
             self.assign_classification_model(self.classification_model_path)
-        
-        
+
+        # Gather samples
         class_0_samples, class_1_samples = self.gather_samples(100)
-        # Create batch from collected samples
-        unhealthy_images = torch.stack([sample['image'] for sample in class_0_samples[:100]]).to(self.device)
+
+        # Convert to tensors
+        unhealthy_images = torch.stack([sample['image'] for sample in class_0_samples[:100]])
         unhealthy_vals = torch.tensor([sample['y'] for sample in class_0_samples[:100]], dtype=torch.long)
-        healthy_images = torch.stack([sample['image'] for sample in class_1_samples[:100]]).to(self.device)
+        healthy_images = torch.stack([sample['image'] for sample in class_1_samples[:100]])
         healthy_vals = torch.tensor([sample['y'] for sample in class_1_samples[:100]], dtype=torch.long)
-        
-        # Unhealthy to Healthy Counterfactual
-        exogenous_noise, abduction_progression = self.ema.ema_model.ddim_counterfactual_sample_from_clean_to_noisy(unhealthy_images, sampling_ratio=self.counterfactual_sampling_ratio)
-        init_image = exogenous_noise
-        classes = torch.tensor([1] * 100, dtype=torch.long).to(self.device)
-        h_counterfactual_image, diffusion_progression = self.ema.ema_model.ddim_counterfactual_sample_from_noisy_to_counterfactual(init_image, classes, self.counterfactual_sampling_ratio, cond_scale=self.counterfactual_sampling_cond_scale)
-        
-        unhealthy_images = unhealthy_images.cpu()
-        h_counterfactual_image = h_counterfactual_image.cpu()
-        
-        
-        # Healthy to Unhealthy Counterfactual
-        exogenous_noise, abduction_progression = self.ema.ema_model.ddim_counterfactual_sample_from_clean_to_noisy(healthy_images, sampling_ratio=self.counterfactual_sampling_ratio)
-        init_image = exogenous_noise
-        classes = torch.tensor([0] * 100, dtype=torch.long).to(self.device)
-        unh_counterfactual_image, diffusion_progression = self.ema.ema_model.ddim_counterfactual_sample_from_noisy_to_counterfactual(init_image, classes, self.counterfactual_sampling_ratio, cond_scale=self.counterfactual_sampling_cond_scale)
-        
-        healthy_images = healthy_images.cpu()
-        unh_counterfactual_image = unh_counterfactual_image.cpu()
-        
-        # Concatenate all batches
-        X_orig = torch.cat([unhealthy_images, healthy_images], dim=0)
-        y_orig = torch.cat([unhealthy_vals, healthy_vals], dim=0)
-        X_counterfactual = torch.cat([h_counterfactual_image, unh_counterfactual_image], dim=0)
-        
+
+        # Split into batches and process
+        X_orig, X_counterfactual, y_orig = [], [], []
+
+        for i in range(0, 100, self.batch_size):
+            print(f"Processing batch {i // batch_size + 1} of {math.ceil(100 / self.batch_size)}")
+            # Unhealthy → Healthy
+            batch_unhealthy = unhealthy_images[i:i+batch_size].to(self.device)
+            batch_labels = torch.tensor([1] * len(batch_unhealthy), dtype=torch.long).to(self.device)
+
+            noise, _ = self.ema.ema_model.ddim_counterfactual_sample_from_clean_to_noisy(batch_unhealthy, sampling_ratio=self.counterfactual_sampling_ratio)
+            h_cf, _ = self.ema.ema_model.ddim_counterfactual_sample_from_noisy_to_counterfactual(
+                noise, batch_labels, self.counterfactual_sampling_ratio, cond_scale=self.counterfactual_sampling_cond_scale
+            )
+
+            # Healthy → Unhealthy
+            batch_healthy = healthy_images[i:i+batch_size].to(self.device)
+            batch_labels = torch.tensor([0] * len(batch_healthy), dtype=torch.long).to(self.device)
+
+            noise, _ = self.ema.ema_model.ddim_counterfactual_sample_from_clean_to_noisy(batch_healthy, sampling_ratio=self.counterfactual_sampling_ratio)
+            u_cf, _ = self.ema.ema_model.ddim_counterfactual_sample_from_noisy_to_counterfactual(
+                noise, batch_labels, self.counterfactual_sampling_ratio, cond_scale=self.counterfactual_sampling_cond_scale
+            )
+
+            X_orig.append(batch_unhealthy.cpu())
+            X_orig.append(batch_healthy.cpu())
+            X_counterfactual.append(h_cf.cpu())
+            X_counterfactual.append(u_cf.cpu())
+            y_orig.append(unhealthy_vals[i:i+batch_size])
+            y_orig.append(healthy_vals[i:i+batch_size])
+
+            torch.cuda.empty_cache()
+
+        # Stack final tensors
+        X_orig = torch.cat(X_orig, dim=0)
+        X_counterfactual = torch.cat(X_counterfactual, dim=0)
+        y_orig = torch.cat(y_orig, dim=0)
+
         self.evaluate_counterfactuals(X_orig, X_counterfactual, y_orig, trainingLog=trainingLog)
-        
+
         torch.cuda.empty_cache()
+
         
         
         

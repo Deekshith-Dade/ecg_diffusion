@@ -35,7 +35,7 @@ def main():
     print(f'Number of Training Examples: {len(trainDataset)}')
 
     unetParams = dict(
-                cond_drop_prob=0.35,
+                cond_drop_prob=0.5,
                 dim_mults = (1, 2, 4, 8, 16),
                 attn_dim_heads = 64,
                 attn_heads = 8
@@ -82,9 +82,9 @@ def main():
         adam_betas = (0.9, 0.99),
         num_samples = 5,
         results_folder = f'./lvef_results/counter_{formatted_time}',
-        sampling_cond_scale = 6.,
-        counterfactual_sampling_ratio = 0.25,
-        counterfactual_sampling_cond_scale = 6.
+        sampling_cond_scale = 10.,
+        counterfactual_sampling_ratio = 0.5,
+        counterfactual_sampling_cond_scale = 10.
     )
     
     config = dict(

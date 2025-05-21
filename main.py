@@ -27,7 +27,7 @@ def main():
     batch_size = 8 * torch.cuda.device_count()
     lr = 1e-4
     training_steps = 100000
-    save_and_sample_every = 1000
+    save_and_sample_every = 10
     scale_training_size = 12
     
     trainDataset, testDataset, kclTaskParams, timeCutoff, lowerCutoff, randSeed = getKCLTrainTestDataset(scale_training_size, dataDir)
